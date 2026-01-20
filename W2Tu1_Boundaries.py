@@ -1,319 +1,395 @@
-import json
-from datetime import datetime
 import streamlit as st
+import numpy as np
+import matplotlib.pyplot as plt
+import networkx as nx
 
 st.set_page_config(page_title="Boundary & Crossings Studio", layout="wide")
 
-# ---------------------------
-# App Title
-# ---------------------------
-st.title("Boundary & Crossings Studio")
-st.caption("Use the app to test whether an explanation is *licensed* by your boundary choice and boundary crossings.")
+# -----------------------------
+# Helpers
+# -----------------------------
+def simulate_duck(
+    duck_type: str,
+    T: int,
+    dt: float,
+    boundary: str,
+    crossings: dict,
+    mechanisms: dict,
+    env_temp: float,
+    cold_shock_time: int,
+    cold_shock_mag: float,
+    noise: float,
+):
+    """
+    Toy simulation meant to be *qualitatively* diagnostic:
+    - Mechanical duck winds down; can only be kept going if caretaker/refuel is allowed inside boundary.
+    - Living duck can maintain viability if it has throughput + maintenance and/or control.
+    """
 
-# ---------------------------
-# Scenario (fixed for App 1)
-# ---------------------------
-st.header("Scenario")
-scenario = "Mechanical duck vs living duck (as systems)"
-st.write(f"Selected Scenario: **{scenario}**")
+    t = np.arange(0, T, dt)
+    n = len(t)
 
-# ---------------------------
-# Session state
-# ---------------------------
-defaults = {
-    "boundary": None,
-    "crossings": {"Matter": False, "Energy": False, "Information": False},
-    "duck_type": "Living Duck",
-    "question": None,
-    "claim": "",
-    "mechanism": "",
-    "variables": [],
-    "invoked_crossings": {"Matter": False, "Energy": False, "Information": False},
-    "timescale": "Minutes",
-    "last_check": {"status": None, "messages": []},  # status: "pass"/"fail"
-}
-for k, v in defaults.items():
-    if k not in st.session_state:
-        st.session_state[k] = v
+    # State variables (dimensionless 0..1-ish)
+    E = np.zeros(n)  # energy reserve
+    I = np.zeros(n)  # integrity (wear/repair)
+    C = np.zeros(n)  # core condition (proxy for defended variable)
 
-# ---------------------------
-# Knowledge base (small + explicit)
-# ---------------------------
-boundaries = [
-    "Duck body only",
-    "Duck + immediate environment (air + local temperature)",
-    "Duck + caretaker (external repair/refuel allowed)",
-]
-
-internal_vars = {
-    "Mechanical Duck": [
-        "spring tension / fuel reserve",
-        "mechanical wear / jam probability",
-        "internal temperature",
-    ],
-    "Living Duck": [
-        "energy reserve (generalized)",
-        "integrity/repair capacity",
-        "controlled variable (core condition / viability index)",
-    ],
-}
-
-# These are *outside* by default unless boundary explicitly includes them
-external_drivers = [
-    "environmental temperature",
-    "disturbance events (cold shock, damage, noise)",
-]
-
-crossing_vars = {
-    "Matter": ["food", "oxygen", "waste (feces/CO2/etc.)"],
-    "Energy": ["free energy input (food)", "heat out"],
-    "Information": ["sensed temperature", "damage signal", "state estimate / error signal"],
-}
-
-questions = [
-    "Why does the duck stop functioning after a while?",
-    "Why can the living duck return to ‘normal’ after cold shock?",
-    "Why does the mechanical duck fail under small disturbances?",
-    "What makes ‘duckness’ persist despite turnover?",
-    "What changes if we move from minutes to months?",
-]
-
-# Question “requirements” as *categories*, not substring vibes
-question_requirements = {
-    "Why can the living duck return to ‘normal’ after cold shock?": {
-        "requires_information_crossing": True,
-        "requires_control_language": True,   # expects mention of sensing/compare/actuate
-        "requires_defended_range": True,
-    }
-}
-
-CONTROL_KEYWORDS = {"sensor", "sense", "detect", "reference", "setpoint", "range", "error", "compare", "actuator", "correct", "feedback", "control"}
-DEFENDED_RANGE_KEYWORDS = {"defended range", "viable range", "within bounds", "homeostasis", "setpoint", "range"}
-SLOW_KEYWORDS = {"turnover", "adapt", "learning", "evolve", "months", "years"}
-
-# ---------------------------
-# Panel B: Boundary picker
-# ---------------------------
-st.header("Boundary Choice")
-col1, col2 = st.columns([1, 1], gap="large")
-
-with col1:
-    st.session_state.boundary = st.selectbox("Choose a boundary", boundaries, index=0)
-with col2:
-    st.session_state.duck_type = st.radio("Duck type", ["Mechanical Duck", "Living Duck"], horizontal=True)
-
-# Compute allowed variable universe
-allowed_vars = list(internal_vars[st.session_state.duck_type])
-
-# Boundary expansions (what becomes “inside”)
-boundary_includes_environment = (st.session_state.boundary == "Duck + immediate environment (air + local temperature)")
-boundary_includes_caretaker = (st.session_state.boundary == "Duck + caretaker (external repair/refuel allowed)")
-
-if boundary_includes_environment:
-    allowed_vars.append("local air temperature (inside boundary)")
-if boundary_includes_caretaker:
-    allowed_vars.extend(["caretaker repair action", "external refuel action"])
-
-# ---------------------------
-# Panel C: Crossings
-# ---------------------------
-st.header("Boundary Crossings")
-st.write("Check what *crosses the boundary* for your chosen system.")
-
-cross_desc = {
-    "Matter": "Mass crosses the boundary (food, oxygen, waste).",
-    "Energy": "Energy crosses as free energy/heat/work.",
-    "Information": "Signals cross that causally change rates/actions (not merely ‘data’).",
-}
-
-c1, c2, c3 = st.columns(3)
-for col, crossing in zip([c1, c2, c3], ["Matter", "Energy", "Information"]):
-    with col:
-        st.session_state.crossings[crossing] = st.checkbox(f"{crossing}", value=st.session_state.crossings[crossing])
-        st.caption(cross_desc[crossing])
-
-# Add crossing variables if enabled (as referenceable terms)
-for c, vals in crossing_vars.items():
-    if st.session_state.crossings[c]:
-        allowed_vars.extend([f"{v} ({c} crossing)" for v in vals])
-
-# ---------------------------
-# Panel D: Variables dashboard
-# ---------------------------
-st.header("What you are allowed to talk about (given your boundary)")
-d1, d2, d3 = st.columns([1, 1, 1], gap="large")
-
-with d1:
-    st.subheader("Internal (inside boundary)")
-    for v in internal_vars[st.session_state.duck_type]:
-        st.write(f"- {v}")
-    if boundary_includes_environment:
-        st.write("- local air temperature (inside boundary)")
-    if boundary_includes_caretaker:
-        st.write("- caretaker repair action")
-        st.write("- external refuel action")
-
-with d2:
-    st.subheader("External drivers (outside unless boundary expanded)")
-    for v in external_drivers:
-        st.write(f"- {v}")
-
-with d3:
-    st.subheader("Crossing variables (only if crossing enabled)")
-    any_cross = False
-    for c, vals in crossing_vars.items():
-        if st.session_state.crossings[c]:
-            any_cross = True
-            for v in vals:
-                st.write(f"- {v}  **[{c}]**")
-    if not any_cross:
-        st.write("_None enabled_")
-
-# Timescale
-st.header("Timescale")
-st.session_state.timescale = st.radio("Choose a timescale for your explanation", ["Minutes", "Months"], horizontal=True)
-
-# ---------------------------
-# Panel E: Question menu
-# ---------------------------
-st.header("Question")
-st.session_state.question = st.selectbox("Choose a question to explain", questions, index=0)
-
-# ---------------------------
-# Panel F: Claim builder + checker
-# ---------------------------
-st.header("Claim Tester (licensed vs not licensed)")
-
-st.session_state.claim = st.text_input("Claim (one sentence)", st.session_state.claim)
-st.session_state.mechanism = st.text_input("Mechanism invoked (short phrase)", st.session_state.mechanism)
-
-# Let them select variables — include externals so they can be flagged if outside
-st.session_state.variables = st.multiselect(
-    "Variables referenced in your explanation",
-    options=sorted(set(allowed_vars + external_drivers)),
-    default=st.session_state.variables,
-)
-
-st.write("Crossings you are *using as causal inputs* in the claim:")
-cc1, cc2, cc3 = st.columns(3)
-for col, crossing in zip([cc1, cc2, cc3], ["Matter", "Energy", "Information"]):
-    with col:
-        st.session_state.invoked_crossings[crossing] = st.checkbox(
-            f"Invoke {crossing}",
-            value=st.session_state.invoked_crossings[crossing],
-            key=f"invoke_{crossing}",
-        )
-
-def run_checker():
-    feedback = []
-
-    # 1) Out-of-bound inference: referencing external drivers without including them in boundary
-    for var in st.session_state.variables:
-        if var == "environmental temperature" and not boundary_includes_environment:
-            feedback.append("You referenced **environmental temperature**, but your boundary does not include the environment. Either expand the boundary or treat it as an external driver you can’t use as an internal mechanism.")
-        if var.startswith("disturbance") and not boundary_includes_environment:
-            # disturbances can still be *external* influences, but if they’re used as mechanism, we flag
-            feedback.append("You referenced **disturbances**. That’s fine as an external push, but you can’t explain recovery/maintenance using disturbance itself as a mechanism unless you include relevant internal control/repair variables.")
-
-    # 2) Crossing mismatch: invoking a crossing causally when it’s not enabled
-    for c in ["Matter", "Energy", "Information"]:
-        if st.session_state.invoked_crossings[c] and not st.session_state.crossings[c]:
-            feedback.append(f"You invoked **{c}** causally, but **{c} crossing** is not enabled for your system.")
-
-    # 3) Timescale mismatch (simple but effective)
-    text_blob = " ".join([st.session_state.claim, st.session_state.mechanism]).lower()
-    if st.session_state.timescale == "Minutes":
-        if any(k in text_blob for k in SLOW_KEYWORDS):
-            feedback.append("You invoked slow processes (turnover/adaptation/evolution) while using a **minutes** timescale. Either switch to months or rewrite with fast variables.")
-    if st.session_state.timescale == "Months":
-        # not an error, but nudge them to include slow variables if they chose months
-        pass
-
-    # 4) Question-specific requirements (kept strict)
-    req = question_requirements.get(st.session_state.question)
-    if req:
-        if req.get("requires_information_crossing") and not st.session_state.crossings["Information"]:
-            feedback.append("This question (return to normal after cold shock) typically requires **Information crossing** (sensing/state estimation). Enable Information or expand boundary to include an external controller.")
-        if req.get("requires_control_language"):
-            if not any(k in text_blob for k in CONTROL_KEYWORDS):
-                feedback.append("Your explanation doesn’t yet contain control-loop language (sensor/reference/error/actuator/feedback/correction). Add a control mechanism or revise the boundary to include an external controller.")
-        if req.get("requires_defended_range"):
-            if not any(k in text_blob for k in DEFENDED_RANGE_KEYWORDS):
-                feedback.append("Your explanation doesn’t yet invoke a **defended range/viable bounds/homeostasis** idea. Add it explicitly or revise your mechanism.")
-
-    if feedback:
-        st.session_state.last_check = {"status": "fail", "messages": feedback}
+    # Initialize
+    if duck_type == "Mechanical Duck":
+        E[0] = 1.0
+        I[0] = 1.0
+        C[0] = 0.85
     else:
-        st.session_state.last_check = {"status": "pass", "messages": ["Claim is licensed under your boundary + crossings."]}
+        E[0] = 0.7
+        I[0] = 0.85
+        C[0] = 0.85
 
-if st.button("Check claim"):
-    run_checker()
+    # Parameters (chosen for stable qualitative behavior)
+    # Energy dynamics
+    base_metabolic_use = 0.010 if duck_type == "Living Duck" else 0.012
+    activity_cost = 0.006 if duck_type == "Living Duck" else 0.007
 
-# Display last check results
-if st.session_state.last_check["status"] == "fail":
-    st.error("Flags:\n- " + "\n- ".join(st.session_state.last_check["messages"]))
-elif st.session_state.last_check["status"] == "pass":
-    st.success("\n".join(st.session_state.last_check["messages"]))
+    # Throughput (if matter+energy crossings enabled)
+    intake_rate = 0.020 if duck_type == "Living Duck" else 0.0  # mechanical has no endogenous "intake"
+    # External caretaker refuel (only if boundary allows caretaker mechanism)
+    caretaker_refuel_rate = 0.035
 
-# ---------------------------
-# Worksheet + Export (no student writing stored in-app)
-# ---------------------------
-st.header("Student Worksheet + Export")
+    # Wear and repair
+    wear_rate = 0.010 if duck_type == "Living Duck" else 0.014
+    repair_rate = 0.020  # max possible, paid with energy
 
-worksheet_text = """Boundary & Crossings Studio — Worksheet (submit on paper or as a photo/PDF)
+    # Control loop
+    setpoint = 0.85
+    control_gain = 0.9
+    control_cost = 0.010
 
-1) Boundary choice:
-- Which boundary did you choose, and why?
+    # Environment coupling
+    # If Energy crossing enabled, C is pulled toward env_temp (scaled), else weaker coupling
+    env_pull = 0.020 if crossings["Energy"] else 0.006
 
-2) Crossings:
-- Which crossings (Matter/Energy/Information) did you enable?
-- Give one concrete example of each enabled crossing.
+    # Normalize env_temp into [0,1] "comfort" scale for this toy model
+    # 22C ~ 0.85, colder ~ lower
+    env_norm = np.clip(0.85 + 0.02 * (env_temp - 22.0), 0.0, 1.0)
 
-3) Two licensed explanations:
-- Write two explanations that the app accepts (licensed).
-- For each, list: variables referenced + which crossing(s) you used.
+    # Disturbance schedule (cold shock)
+    shock = np.zeros(n)
+    if 0 <= cold_shock_time < n:
+        shock[int(cold_shock_time)] = cold_shock_mag
 
-4) One failed explanation (the learning moment):
-- Write one explanation the app rejected.
-- Copy the app’s main flag.
-- What did you change (boundary or crossings) to make it licensed?
+    for k in range(1, n):
+        # noise/disturbance
+        eps = np.random.normal(0, noise)
 
-5) Reflection:
-- What did you learn about why “open system” is not the same as “alive”?
-"""
+        # -----------------------
+        # INPUTS across boundary
+        # -----------------------
+        # Throughput intake requires Matter crossing (food/oxygen) and (implicitly) Energy usefulness.
+        # We gate it with Matter crossing; Energy crossing mainly matters via env coupling + costs.
+        intake = 0.0
+        if duck_type == "Living Duck" and crossings["Matter"]:
+            intake = intake_rate * (1.0 - E[k - 1])  # saturating as E fills
 
-st.download_button(
-    "Download worksheet (TXT)",
-    data=worksheet_text,
-    file_name="boundary_crossings_worksheet.txt",
-    mime="text/plain",
+        # Caretaker refuel only if included in boundary AND mechanism turned on
+        caretaker_refuel = 0.0
+        if mechanisms["caretaker_refuel"] and boundary == "Duck + caretaker":
+            caretaker_refuel = caretaker_refuel_rate * (1.0 - E[k - 1])
+
+        # -----------------------
+        # MAINTENANCE / REPAIR
+        # -----------------------
+        repair = 0.0
+        if mechanisms["repair"]:
+            # repair is limited by energy; it increases integrity, costs energy
+            repair = repair_rate * min(E[k - 1], 1.0)
+
+        # -----------------------
+        # CYBERNETIC CONTROL
+        # -----------------------
+        control = 0.0
+        if mechanisms["control"]:
+            # control requires Information crossing OR caretaker inside boundary (external controller)
+            if crossings["Information"] or boundary == "Duck + caretaker":
+                error = setpoint - C[k - 1]
+                control = control_gain * error
+            else:
+                control = 0.0
+
+        # -----------------------
+        # ENERGY UPDATE
+        # -----------------------
+        # Activity depends on integrity and core condition (if the "duck" is broken/cold, it "struggles")
+        activity = np.clip(0.3 + 0.7 * I[k - 1] * C[k - 1], 0.0, 1.0)
+
+        E_use = base_metabolic_use + activity_cost * activity
+        E_costs = 0.0
+        if mechanisms["repair"]:
+            E_costs += 0.5 * repair  # repair consumes energy
+        if mechanisms["control"] and (crossings["Information"] or boundary == "Duck + caretaker"):
+            E_costs += control_cost * abs(control)
+
+        dE = intake + caretaker_refuel - (E_use + E_costs)
+        E[k] = np.clip(E[k - 1] + dE + eps * 0.002, 0.0, 1.2)
+
+        # -----------------------
+        # INTEGRITY UPDATE
+        # -----------------------
+        # wear rises with activity and disturbances; repair counters it if enabled
+        dI = -(wear_rate * activity) - shock[k] * 0.30 + (0.8 * repair)
+        I[k] = np.clip(I[k - 1] + dI + eps * 0.002, 0.0, 1.0)
+
+        # -----------------------
+        # CORE CONDITION UPDATE
+        # -----------------------
+        # pulled toward environment if Energy crossing; control pushes toward setpoint (if available)
+        dC = -env_pull * (C[k - 1] - env_norm) - shock[k] * 0.45 + (0.15 * control)
+        C[k] = np.clip(C[k - 1] + dC + eps * 0.004, 0.0, 1.0)
+
+    # "Viability" as a banded function (students infer defended range concept from the band)
+    # Penalize low energy, low integrity, and core drifting away from setpoint.
+    V = np.clip(
+        1.0
+        - 1.1 * np.maximum(0, 0.25 - E)
+        - 1.3 * np.maximum(0, 0.45 - I)
+        - 0.9 * np.abs(C - setpoint),
+        0.0,
+        1.0,
+    )
+
+    return t, E, I, C, V, setpoint, env_norm
+
+
+def build_causal_graph(boundary, crossings, mechanisms, duck_type):
+    """
+    Build a directed causal graph that updates with boundary/crossings/mechanisms.
+    Students learn: boundary choices and crossings *license* causal edges.
+    """
+    G = nx.DiGraph()
+
+    # Core nodes
+    nodes_internal = ["Energy reserve (E)", "Integrity (I)", "Core condition (C)", "Viability (V)"]
+    for n in nodes_internal:
+        G.add_node(n, kind="internal")
+
+    # External nodes
+    G.add_node("Environment", kind="external")
+    G.add_node("Disturbance", kind="external")
+
+    # Crossings as interface nodes (conceptual)
+    if crossings["Matter"]:
+        G.add_node("Matter in/out", kind="crossing")
+    if crossings["Energy"]:
+        G.add_node("Energy exchange", kind="crossing")
+    if crossings["Information"]:
+        G.add_node("Information signals", kind="crossing")
+
+    # Caretaker node only if boundary includes it
+    if boundary == "Duck + caretaker":
+        G.add_node("Caretaker", kind="boundary_included")
+
+    # Baseline internal couplings
+    G.add_edge("Energy reserve (E)", "Integrity (I)", label="powers repair")
+    G.add_edge("Energy reserve (E)", "Core condition (C)", label="powers regulation")
+    G.add_edge("Integrity (I)", "Viability (V)", label="enables function")
+    G.add_edge("Core condition (C)", "Viability (V)", label="within bounds")
+    G.add_edge("Energy reserve (E)", "Viability (V)", label="avoids depletion")
+
+    # Disturbance always hits internal variables (as an external driver)
+    G.add_edge("Disturbance", "Integrity (I)", label="damage/wear")
+    G.add_edge("Disturbance", "Core condition (C)", label="shock")
+
+    # Environment coupling depends on Energy crossing (strong) vs weak background (still shown)
+    if crossings["Energy"]:
+        G.add_edge("Environment", "Energy exchange", label="heat/work")
+        G.add_edge("Energy exchange", "Core condition (C)", label="pull toward env")
+    else:
+        # show weak coupling as dashed-style by label hint
+        G.add_edge("Environment", "Core condition (C)", label="weak coupling (no energy crossing)")
+
+    # Matter crossing enables intake affecting energy reserve
+    if crossings["Matter"]:
+        G.add_edge("Matter in/out", "Energy reserve (E)", label="intake supports E")
+
+    # Repair mechanism
+    if mechanisms["repair"]:
+        G.add_edge("Energy reserve (E)", "Integrity (I)", label="repair (costly)")
+
+    # Control mechanism requires info OR caretaker inside boundary
+    if mechanisms["control"]:
+        if crossings["Information"]:
+            G.add_edge("Information signals", "Core condition (C)", label="feedback control")
+        elif boundary == "Duck + caretaker":
+            G.add_edge("Caretaker", "Core condition (C)", label="external control")
+        else:
+            # control selected but not licensed; graph shows "missing link"
+            G.add_node("⚠ missing sensing", kind="warning")
+            G.add_edge("⚠ missing sensing", "Core condition (C)", label="control not licensed")
+
+    # Caretaker refuel
+    if mechanisms["caretaker_refuel"]:
+        if boundary == "Duck + caretaker":
+            G.add_edge("Caretaker", "Energy reserve (E)", label="refuel")
+        else:
+            G.add_node("⚠ caretaker outside", kind="warning")
+            G.add_edge("⚠ caretaker outside", "Energy reserve (E)", label="refuel not licensed")
+
+    return G
+
+
+def draw_graph(G):
+    # Node color by kind (no seaborn; matplotlib only)
+    kind_to_color = {
+        "internal": None,
+        "external": None,
+        "crossing": None,
+        "boundary_included": None,
+        "warning": None,
+    }
+
+    pos = nx.spring_layout(G, seed=7, k=0.85)
+
+    fig = plt.figure(figsize=(8.8, 5.6))
+    ax = plt.gca()
+    ax.set_axis_off()
+
+    # Draw nodes by kind to allow different alpha/edge emphasis without explicit colors
+    for kind in ["external", "crossing", "boundary_included", "internal", "warning"]:
+        nodelist = [n for n, d in G.nodes(data=True) if d.get("kind") == kind]
+        if not nodelist:
+            continue
+        nx.draw_networkx_nodes(G, pos, nodelist=nodelist, node_size=1050, alpha=0.9, ax=ax)
+
+    nx.draw_networkx_edges(G, pos, arrows=True, arrowsize=18, width=1.4, alpha=0.9, ax=ax)
+    nx.draw_networkx_labels(G, pos, font_size=9, ax=ax)
+
+    # Edge labels (kept short)
+    edge_labels = {(u, v): d.get("label", "") for u, v, d in G.edges(data=True)}
+    nx.draw_networkx_edge_labels(G, pos, edge_labels=edge_labels, font_size=7, ax=ax, rotate=False)
+
+    plt.tight_layout()
+    return fig
+
+
+# -----------------------------
+# Sidebar controls (all interaction)
+# -----------------------------
+st.sidebar.header("Controls (no typing)")
+
+duck_type = st.sidebar.radio("Duck", ["Mechanical Duck", "Living Duck"], index=1)
+
+boundary = st.sidebar.selectbox(
+    "Boundary",
+    ["Duck only", "Duck + environment", "Duck + caretaker"],
+    index=0
 )
-
-# Export current run summary for receipts (optional)
-run_summary = {
-    "timestamp": datetime.now().isoformat(timespec="seconds"),
-    "scenario": scenario,
-    "duck_type": st.session_state.duck_type,
-    "boundary": st.session_state.boundary,
-    "crossings_enabled": st.session_state.crossings,
-    "timescale": st.session_state.timescale,
-    "question": st.session_state.question,
-    "claim": st.session_state.claim,
-    "mechanism": st.session_state.mechanism,
-    "variables_selected": st.session_state.variables,
-    "invoked_crossings": st.session_state.invoked_crossings,
-    "last_check": st.session_state.last_check,
+boundary_map = {
+    "Duck only": "Duck body only",
+    "Duck + environment": "Duck + immediate environment",
+    "Duck + caretaker": "Duck + caretaker"
 }
 
-st.download_button(
-    "Export run summary (JSON)",
-    data=json.dumps(run_summary, indent=2),
-    file_name="boundary_crossings_run_summary.json",
-    mime="application/json",
+st.sidebar.subheader("Crossings (what crosses the boundary)")
+crossings = {
+    "Matter": st.sidebar.checkbox("Matter", value=True),
+    "Energy": st.sidebar.checkbox("Energy", value=True),
+    "Information": st.sidebar.checkbox("Information", value=(duck_type == "Living Duck")),
+}
+
+st.sidebar.subheader("Mechanisms (what exists *inside* the boundary)")
+# These are model toggles; boundary/crossings will determine whether they actually have effect.
+mechanisms = {
+    "repair": st.sidebar.checkbox("Self-repair / maintenance", value=(duck_type == "Living Duck")),
+    "control": st.sidebar.checkbox("Feedback control", value=(duck_type == "Living Duck")),
+    "caretaker_refuel": st.sidebar.checkbox("Caretaker refuel", value=False),
+}
+
+st.sidebar.subheader("Disturbance + environment")
+env_temp = st.sidebar.slider("Environment temperature (°C)", min_value=0.0, max_value=35.0, value=22.0, step=0.5)
+cold_shock_time = st.sidebar.slider("Cold shock time (step)", 0, 120, 40, 1)
+cold_shock_mag = st.sidebar.slider("Cold shock magnitude", 0.0, 1.0, 0.35, 0.05)
+noise = st.sidebar.slider("Noise", 0.0, 0.15, 0.04, 0.01)
+
+st.sidebar.subheader("Time")
+T = st.sidebar.slider("Simulation length (steps)", 60, 240, 120, 10)
+
+# -----------------------------
+# Main layout
+# -----------------------------
+st.title("App 1 — Boundary & Crossings Studio")
+st.caption("Flip boundary/crossing/mechanism switches and infer concepts from **graphs**, not text answers.")
+
+left, right = st.columns([1.05, 1.0], gap="large")
+
+# -----------------------------
+# Build causal graph
+# -----------------------------
+boundary_full = boundary_map[boundary]
+G = build_causal_graph(boundary_full, crossings, mechanisms, duck_type)
+
+with left:
+    st.subheader("A) Causal structure implied by your modeling choices")
+    fig_g = draw_graph(G)
+    st.pyplot(fig_g, clear_figure=True)
+
+    # Quick, non-graded in-app diagnostics (still a display, not a worksheet)
+    st.subheader("B) What changed when you toggled settings?")
+    # This is intentionally descriptive and short; the inference happens from the graph + plots.
+    msgs = []
+    if mechanisms["control"] and not (crossings["Information"] or boundary_full == "Duck + caretaker"):
+        msgs.append("Feedback control is selected but **no sensing route exists** (no Information crossing and no caretaker inside boundary).")
+    if mechanisms["caretaker_refuel"] and boundary_full != "Duck + caretaker":
+        msgs.append("Caretaker refuel is selected but the caretaker is **outside the boundary**.")
+    if msgs:
+        st.warning(" \n\n".join(msgs))
+    else:
+        st.info("Use the causal graph to justify which explanations are licensed by your boundary + crossings.")
+
+# -----------------------------
+# Simulate and plot
+# -----------------------------
+t, E, I, C, V, setpoint, env_norm = simulate_duck(
+    duck_type=duck_type,
+    T=T,
+    dt=1.0,
+    boundary=boundary_full,
+    crossings=crossings,
+    mechanisms=mechanisms,
+    env_temp=env_temp,
+    cold_shock_time=cold_shock_time,
+    cold_shock_mag=cold_shock_mag,
+    noise=noise,
 )
 
-# Instructor knobs (non-persistent; just convenience)
-with st.expander("Instructor knobs"):
-    st.write("If you want strict/no-hints modes later, wire these into the checker and UI.")
-    st.checkbox("Strict mode (future)", value=True, disabled=True)
-    st.checkbox("Show hints (future)", value=False, disabled=True)
+with right:
+    st.subheader("C) Observable behavior over time (infer concepts here)")
+
+    fig = plt.figure(figsize=(8.8, 5.6))
+    ax = plt.gca()
+
+    # Plot viability and internal states (no explicit colors set)
+    ax.plot(t, V, linewidth=2.2, label="Viability (V)")
+    ax.plot(t, E, linewidth=1.6, label="Energy reserve (E)")
+    ax.plot(t, I, linewidth=1.6, label="Integrity (I)")
+    ax.plot(t, C, linewidth=1.6, label="Core condition (C)")
+
+    # Defended band for "viability" (students infer defended range idea)
+    ax.axhspan(0.70, 1.00, alpha=0.12, label="Viable band (0.70–1.00)")
+    ax.axvline(cold_shock_time, linestyle="--", linewidth=1.2, label="Cold shock")
+
+    ax.set_ylim(-0.05, 1.25)
+    ax.set_xlabel("Time (steps)")
+    ax.set_ylabel("State (scaled)")
+    ax.legend(loc="lower left", fontsize=8)
+    ax.grid(True, alpha=0.25)
+    plt.tight_layout()
+
+    st.pyplot(fig, clear_figure=True)
+
+    st.subheader("D) Minimal readout")
+    st.metric("Final viability", f"{V[-1]:.2f}")
+    st.metric("Min viability", f"{V.min():.2f}")
+    st.caption(
+        "Try: (1) make mechanical duck survive shocks without caretaker, "
+        "(2) turn off Information and see whether ‘control’ still works, "
+        "(3) move caretaker inside boundary and see which edges and trajectories change."
+    )
+
