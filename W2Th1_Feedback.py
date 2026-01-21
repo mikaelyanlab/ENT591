@@ -1,11 +1,6 @@
 # why_openness_isnt_life_studio.py
-# Streamlit App: "Why Openness Isn’t Life Studio"
-#
-# Student-facing only:
-# - No Instructor mode.
-# - No free-response inputs.
-# - Interaction via toggles/menus/sliders that update in-app visuals.
-# - The app shows plots + neutral prompts; it does NOT explain the answers.
+# Streamlit App 2 (student-facing): visuals only.
+# All questions + answer spaces belong in a Google Doc (not in the app).
 
 import streamlit as st
 import numpy as np
@@ -172,6 +167,7 @@ def simulate(params, initial, perturbation, seed=0):
     minV = float(np.min(V))
     finalV = float(V[-1])
 
+    # Regime label
     v_std = float(np.std(V[int(0.4 * T):])) if T > 5 else 0.0
     if finalV < params["collapse_threshold"] or minV < params["collapse_threshold"]:
         regime = "Collapse / drift"
@@ -180,7 +176,7 @@ def simulate(params, initial, perturbation, seed=0):
     else:
         regime = "Regulated steady"
 
-    # Binding constraint heuristic (coarse but useful)
+    # Binding constraint heuristic (coarse)
     sat_frac = float(np.mean(np.isclose(np.abs(control_effort), actuator_max, atol=1e-6))) if actuator_max > 0 else 0.0
     low_I = float(np.mean(I < 0.4))
     repair_cap_hit = float(np.mean(repair_flow > 0.9 * repair_cap)) if repair_cap > 0 else 0.0
@@ -217,31 +213,47 @@ def simulate(params, initial, perturbation, seed=0):
 # -----------------------------
 # Plot helpers
 # -----------------------------
-def plot_timeseries(out, steps, title="Time series"):
+def plot_timeseries(out, steps, title):
     x = np.arange(steps)
-    fig = plt.figure(figsize=(9, 4.2))
+    fig = plt.figure(figsize=(9, 4.0))
     ax = fig.add_subplot(1, 1, 1)
     ax.plot(x, out["V"], label="Viability")
-    ax.plot(x, out["C"], label="Core condition")
+    ax.plot(x, out["C"], label="Core")
     ax.plot(x, out["E"], label="Energy")
     ax.plot(x, out["I"], label="Integrity")
     ax.set_xlabel("Step")
-    ax.set_ylabel("State (0–1)")
+    ax.set_ylabel("0–1")
     ax.set_title(title)
     ax.legend(loc="best")
     return fig
 
 
-def plot_constraint_dashboard(out, steps, title="Budget & maintenance signals"):
+def plot_budget(out, steps, title):
     x = np.arange(steps)
-    fig = plt.figure(figsize=(9, 4.2))
+    fig = plt.figure(figsize=(9, 4.0))
     ax = fig.add_subplot(1, 1, 1)
     ax.plot(x, out["throughput_flow"], label="Throughput (in)")
     ax.plot(x, out["maintenance_flow"], label="Maintenance (cost)")
     ax.plot(x, np.abs(out["control_effort"]), label="|Control effort|")
     ax.plot(x, out["repair_flow"], label="Repair flow")
     ax.set_xlabel("Step")
-    ax.set_ylabel("Flow (arb. units)")
+    ax.set_ylabel("arb. units")
+    ax.set_title(title)
+    ax.legend(loc="best")
+    return fig
+
+
+def plot_control(out, steps, title):
+    x = np.arange(steps)
+    fig = plt.figure(figsize=(9, 4.0))
+    ax = fig.add_subplot(1, 1, 1)
+    ax.plot(x, out["error_trace"], label="Error (target − core)")
+    ax.plot(x, out["control_effort"], label="Control effort (u)")
+    if out["actuator_max"] > 0:
+        ax.axhline(out["actuator_max"], linestyle="--", linewidth=1, label="Actuator cap (+)")
+        ax.axhline(-out["actuator_max"], linestyle="--", linewidth=1, label="Actuator cap (−)")
+    ax.set_xlabel("Step")
+    ax.set_ylabel("signal")
     ax.set_title(title)
     ax.legend(loc="best")
     return fig
@@ -249,24 +261,24 @@ def plot_constraint_dashboard(out, steps, title="Budget & maintenance signals"):
 
 def plot_equifinality_overlay(params, perturbation, seed=0):
     initials = [
-        {"name": "IC-A (low energy)", "E": 0.25, "I": 0.85, "C": params["core_target"]},
-        {"name": "IC-B (low integrity)", "E": 0.75, "I": 0.35, "C": params["core_target"]},
-        {"name": "IC-C (low core)", "E": 0.75, "I": 0.85, "C": 0.35},
+        {"name": "IC-A", "E": 0.25, "I": 0.85, "C": params["core_target"]},
+        {"name": "IC-B", "E": 0.75, "I": 0.35, "C": params["core_target"]},
+        {"name": "IC-C", "E": 0.75, "I": 0.85, "C": 0.35},
     ]
     outs = [simulate(params, ic, perturbation, seed=seed + i) for i, ic in enumerate(initials)]
 
-    fig = plt.figure(figsize=(9, 4.2))
+    fig = plt.figure(figsize=(9, 4.0))
     ax = fig.add_subplot(1, 1, 1)
     for ic, out in zip(initials, outs):
         ax.plot(np.arange(params["steps"]), out["V"], label=ic["name"])
     ax.set_xlabel("Step")
     ax.set_ylabel("Viability (0–1)")
-    ax.set_title("Equifinality overlay (viability trajectories)")
+    ax.set_title("Equifinality overlay (Viability)")
     ax.legend(loc="best")
 
     finals = np.array([o["finalV"] for o in outs])
     eq_present = (np.max(finals) - np.min(finals)) < 0.08
-    return fig, eq_present, outs
+    return fig, eq_present
 
 
 def plot_regime_map(base_params, perturbation, seed=0):
@@ -289,7 +301,7 @@ def plot_regime_map(base_params, perturbation, seed=0):
             else:
                 regime_code[i, j] = 2
 
-    fig = plt.figure(figsize=(7.0, 5.4))
+    fig = plt.figure(figsize=(7.2, 5.2))
     ax = fig.add_subplot(1, 1, 1)
     im = ax.imshow(
         regime_code,
@@ -297,39 +309,27 @@ def plot_regime_map(base_params, perturbation, seed=0):
         aspect="auto",
         extent=[thr_vals[0], thr_vals[-1], maint_vals[0], maint_vals[-1]]
     )
-    ax.set_xlabel("Throughput (driving)")
-    ax.set_ylabel("Maintenance cost (overhead)")
-    ax.set_title("Regime map (throughput × maintenance)")
+    ax.set_xlabel("Throughput")
+    ax.set_ylabel("Maintenance cost")
+    ax.set_title("Regime map")
     cbar = fig.colorbar(im, ax=ax, fraction=0.046, pad=0.04)
     cbar.set_ticks([0, 1, 2])
-    cbar.set_ticklabels(["Steady", "Oscillatory", "Collapse"])
-    return fig
-
-
-def plot_control(out, steps, title="Error and control effort"):
-    x = np.arange(steps)
-    fig = plt.figure(figsize=(9, 4.2))
-    ax = fig.add_subplot(1, 1, 1)
-    ax.plot(x, out["error_trace"], label="Error (target − core)")
-    ax.plot(x, out["control_effort"], label="Control effort (u)")
-    if out["actuator_max"] > 0:
-        ax.axhline(out["actuator_max"], linestyle="--", linewidth=1, label="Actuator cap (+)")
-        ax.axhline(-out["actuator_max"], linestyle="--", linewidth=1, label="Actuator cap (−)")
-    ax.set_xlabel("Step")
-    ax.set_ylabel("Signal / effort")
-    ax.set_title(title)
-    ax.legend(loc="best")
+    cbar.set_ticklabels(["Steady", "Osc", "Collapse"])
     return fig
 
 
 # -----------------------------
-# App UI
+# App UI (minimal; App-1 style)
 # -----------------------------
 st.title("Why Openness Isn’t Life Studio")
-st.caption("Explore how openness, dissipation, and feedback interact—using only plots and model controls.")
 
+# Sidebar: controls only (no instructions)
 with st.sidebar:
-    st.header("System choices")
+    st.header("Scenario")
+    st.write("Mechanical duck vs living duck")
+
+    st.divider()
+    st.header("System")
 
     duck_type = st.radio("Duck type", ["Living", "Mechanical"], index=0)
 
@@ -350,26 +350,26 @@ with st.sidebar:
     mech_refuel = st.checkbox("Caretaker refuel", value=False)
 
     st.divider()
-    st.header("Constraint knobs")
-    throughput = st.slider("Throughput (driving)", 0.0, 1.0, 0.65, 0.01)
-    maintenance_cost = st.slider("Maintenance cost (overhead)", 0.0, 1.0, 0.35, 0.01)
-    repair_capacity = st.slider("Repair capacity (cap)", 0.0, 1.0, 0.55, 0.01)
-    actuator_strength = st.slider("Actuator strength (cap)", 0.0, 1.0, 0.50, 0.01)
+    st.header("Constraints")
+    throughput = st.slider("Throughput", 0.0, 1.0, 0.65, 0.01)
+    maintenance_cost = st.slider("Maintenance cost", 0.0, 1.0, 0.35, 0.01)
+    repair_capacity = st.slider("Repair capacity", 0.0, 1.0, 0.55, 0.01)
+    actuator_strength = st.slider("Actuator strength", 0.0, 1.0, 0.50, 0.01)
     control_delay = st.slider("Control delay (steps)", 0, 10, 1, 1)
     noise = st.slider("Noise", 0.0, 0.10, 0.01, 0.005)
 
     st.divider()
-    st.header("Disturbance (cold shock)")
-    shock_time_mode = st.radio("Shock timing", ["Early", "Mid", "Late"], index=1, horizontal=True)
-    shock_mag = st.slider("Shock magnitude", 0.0, 0.60, 0.15, 0.01)
-    shock_width = st.slider("Shock width (steps)", 1, 30, 8, 1)
+    st.header("Disturbance")
+    shock_time_mode = st.radio("Cold shock time", ["Early", "Mid", "Late"], index=1, horizontal=True)
+    shock_mag = st.slider("Magnitude", 0.0, 0.60, 0.15, 0.01)
+    shock_width = st.slider("Width (steps)", 1, 30, 8, 1)
 
     st.divider()
     st.header("Simulation")
     steps = st.slider("Steps", 60, 300, 160, 10)
-    env_temp = st.slider("Environment temperature (normalized)", 0.0, 1.0, 0.70, 0.01)
-    env_coupling = st.slider("Energy coupling to environment", 0.0, 0.25, 0.08, 0.01)
-    seed = st.number_input("Random seed", min_value=0, max_value=10_000, value=0, step=1)
+    env_temp = st.slider("Environment temp", 0.0, 1.0, 0.70, 0.01)
+    env_coupling = st.slider("Energy coupling", 0.0, 0.25, 0.08, 0.01)
+    seed = st.number_input("Seed", min_value=0, max_value=10_000, value=0, step=1)
 
 # Shock timing preset
 if shock_time_mode == "Early":
@@ -381,7 +381,7 @@ else:
 
 perturbation = {"shock_time": shock_time, "shock_mag": shock_mag, "shock_width": shock_width}
 
-# Parameters bundle
+# Params bundle
 params = {
     "duck_type": duck_type,
     "boundary": boundary,
@@ -446,59 +446,37 @@ params = {
 initial_default = {"E": 0.75, "I": 0.85, "C": params["core_target"]}
 out = simulate(params, initial_default, perturbation, seed=int(seed))
 
-# Top diagnostics (no explanation; just observables)
-c1, c2, c3, c4 = st.columns(4)
-c1.metric("Final viability", f"{out['finalV']:.2f}")
-c2.metric("Minimum viability", f"{out['minV']:.2f}")
-c3.metric("Regime label", out["regime"])
-c4.metric("Binding constraint", out["binding"])
+# Top-row: observables only
+m1, m2, m3, m4 = st.columns(4)
+m1.metric("Final viability", f"{out['finalV']:.2f}")
+m2.metric("Minimum viability", f"{out['minV']:.2f}")
+m3.metric("Regime", out["regime"])
+m4.metric("Binding constraint", out["binding"])
 
-# Tabs aligned to the three theorists (student-facing prompts only)
+# Tabs: visuals only
 tab_bert, tab_prig, tab_wien = st.tabs(["Bertalanffy", "Prigogine", "Wiener"])
 
 with tab_bert:
-    st.subheader("Equifinality overlay (different initial conditions)")
-    fig_eq, eq_present, outs = plot_equifinality_overlay(params, perturbation, seed=int(seed))
-    left, right = st.columns([1.2, 1.0])
+    left, right = st.columns([1.25, 1.0])
     with left:
+        fig_eq, eq_present = plot_equifinality_overlay(params, perturbation, seed=int(seed))
         st.pyplot(fig_eq, clear_figure=True)
     with right:
+        st.pyplot(plot_timeseries(out, steps, title="Time series (current setting)"), clear_figure=True)
         st.metric("Equifinality indicator", "Present" if eq_present else "Absent")
-        st.markdown("### Prompts")
-        st.markdown(
-            "- Do the trajectories converge to a similar outcome?\n"
-            "- Which initial condition is most vulnerable under your current settings?\n"
-            "- Which knob changes whether convergence occurs?"
-        )
-        st.markdown("### Run summaries (in-app)")
-        for i, o in enumerate(outs):
-            st.write(f"- IC-{i+1}: final={o['finalV']:.2f}, min={o['minV']:.2f}, regime={o['regime']}")
 
 with tab_prig:
-    st.subheader("Regimes under driving and overhead")
-    left, right = st.columns([1.05, 1.15])
+    left, right = st.columns([1.25, 1.0])
     with left:
-        st.pyplot(plot_timeseries(out, steps, title="Time series (current settings)"), clear_figure=True)
-        st.pyplot(plot_constraint_dashboard(out, steps, title="Budget & maintenance signals (current settings)"), clear_figure=True)
+        st.pyplot(plot_timeseries(out, steps, title="Time series (current setting)"), clear_figure=True)
+        st.pyplot(plot_budget(out, steps, title="Budget / flows (current setting)"), clear_figure=True)
     with right:
         st.pyplot(plot_regime_map(params, perturbation, seed=int(seed)), clear_figure=True)
-        st.markdown("### Prompts")
-        st.markdown(
-            "- Locate your current throughput/maintenance setting on the regime map.\n"
-            "- As you lower throughput, what changes first: energy, core, integrity, or viability?\n"
-            "- Can you find a threshold where the regime label flips?"
-        )
 
 with tab_wien:
-    st.subheader("Control under constraints")
-    left, right = st.columns([1.15, 1.05])
+    left, right = st.columns([1.25, 1.0])
     with left:
-        st.pyplot(plot_timeseries(out, steps, title="Time series (current settings)"), clear_figure=True)
-        st.pyplot(plot_control(out, steps, title="Error and control effort (current settings)"), clear_figure=True)
+        st.pyplot(plot_timeseries(out, steps, title="Time series (current setting)"), clear_figure=True)
+        st.pyplot(plot_control(out, steps, title="Control signals (current setting)"), clear_figure=True)
     with right:
-        st.markdown("### Prompts")
-        st.markdown(
-            "- Does the control effort hit a cap (flat-topping at dashed lines)?\n"
-            "- What changes first when you increase delay: the error, the effort, or viability?\n"
-            "- Can you produce oscillation by tuning delay and actuator strength?"
-        )
+        st.pyplot(plot_budget(out, steps, title="Budget / flows (current setting)"), clear_figure=True)
