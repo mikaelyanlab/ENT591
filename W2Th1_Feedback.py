@@ -1,17 +1,17 @@
-# app2_three_upgrades_studio.py
-# Streamlit App 2: "Why Openness Isn't Life" (von Bertalanffy, Prigogine, Wiener)
+# why_openness_isnt_life_studio.py
+# Streamlit App: "Why Openness Isn’t Life Studio"
 #
-# STUDENT-FACING by default:
-# - No free-response inputs from students.
+# Student-facing only:
+# - No Instructor mode.
+# - No free-response inputs.
 # - Interaction via toggles/menus/sliders that update in-app visuals.
-# - Explanations are NOT given in the UI; instead the app presents plots + prompts.
-# - Optional Instructor mode reveals instructor-only notes (hidden by default).
+# - The app shows plots + neutral prompts; it does NOT explain the answers.
 
 import streamlit as st
 import numpy as np
 import matplotlib.pyplot as plt
 
-st.set_page_config(page_title="Why Openness Isn't Life", layout="wide")
+st.set_page_config(page_title="Why Openness Isn’t Life Studio", layout="wide")
 
 
 # -----------------------------
@@ -23,11 +23,11 @@ def clamp01(x):
 
 def simulate(params, initial, perturbation, seed=0):
     """
-    State variables:
-      E = energy reserve (0..1)
-      I = integrity (0..1)   [wear vs repair]
-      C = core condition (0..1)  [regulated variable; target C*]
-      V = viability (0..1)   [composite of E, I, and closeness to target]
+    State variables (0..1):
+      E = energy reserve
+      I = integrity (wear vs repair)
+      C = core condition (regulated variable; target C*)
+      V = viability (composite of E, I, and closeness to target)
 
     Crossings:
       Matter -> enables throughput (resource inflow)
@@ -38,8 +38,6 @@ def simulate(params, initial, perturbation, seed=0):
       Self-repair/maintenance -> enables repair flow (capped by repair capacity)
       Feedback control -> enables control effort (capped by actuator strength, delayed)
       Caretaker refuel -> adds extra throughput, but only if caretaker is inside boundary
-
-    Returns time series and diagnostic tags (regime + binding constraint).
     """
     rng = np.random.default_rng(seed)
 
@@ -85,7 +83,7 @@ def simulate(params, initial, perturbation, seed=0):
     refuel_effective = caretaker_refuel_on and caretaker_inside and matter_on
     refuel_boost = params["refuel_boost"] if refuel_effective else 0.0
 
-    # Mechanical duck discounts (weak pseudo-control/repair)
+    # Mechanical duck: weak control/repair, higher overhead
     if duck_type == "Mechanical":
         actuator_max *= params["mechanical_control_discount"]
         repair_cap *= params["mechanical_repair_discount"]
@@ -116,7 +114,7 @@ def simulate(params, initial, perturbation, seed=0):
         v = 0.40 * e + 0.35 * i + 0.25 * core_ok
         return clamp01(v)
 
-    V[0] = viability(E[0], I[0], C[0])
+    V[0] = float(viability(E[0], I[0], C[0]))
 
     for t in range(1, T):
         # Cold shock: transiently reduces environment temperature
@@ -129,15 +127,16 @@ def simulate(params, initial, perturbation, seed=0):
         throughput_flow[t] = effective_throughput
         dE_in = params["assimilation"] * effective_throughput * (1.0 - E[t - 1])
 
-        # Maintenance drain
+        # Maintenance drain (higher when integrity is low)
         maint = maintenance_cost * (params["maint_base"] + params["maint_integrity_weight"] * (1.0 - I[t - 1]))
         maintenance_flow[t] = maint
 
-        # Control (negative feedback)
+        # Control (negative feedback): only if info + control
         error = (C_target - C[t - 1])
         error_trace[t] = error
         err_buffer.append(error)
         delayed_error = err_buffer.pop(0)
+
         u_raw = params["control_gain"] * delayed_error
         u = float(np.clip(u_raw, -actuator_max, actuator_max))
         control_effort[t] = u
@@ -181,7 +180,7 @@ def simulate(params, initial, perturbation, seed=0):
     else:
         regime = "Regulated steady"
 
-    # Binding constraint heuristic
+    # Binding constraint heuristic (coarse but useful)
     sat_frac = float(np.mean(np.isclose(np.abs(control_effort), actuator_max, atol=1e-6))) if actuator_max > 0 else 0.0
     low_I = float(np.mean(I < 0.4))
     repair_cap_hit = float(np.mean(repair_flow > 0.9 * repair_cap)) if repair_cap > 0 else 0.0
@@ -212,11 +211,12 @@ def simulate(params, initial, perturbation, seed=0):
         "regime": regime,
         "binding": binding,
         "actuator_max": actuator_max,
-        "repair_cap": repair_cap,
-        "delay_steps": delay_steps
     }
 
 
+# -----------------------------
+# Plot helpers
+# -----------------------------
 def plot_timeseries(out, steps, title="Time series"):
     x = np.arange(steps)
     fig = plt.figure(figsize=(9, 4.2))
@@ -232,7 +232,7 @@ def plot_timeseries(out, steps, title="Time series"):
     return fig
 
 
-def plot_constraint_dashboard(out, steps, title="Constraint dashboard"):
+def plot_constraint_dashboard(out, steps, title="Budget & maintenance signals"):
     x = np.arange(steps)
     fig = plt.figure(figsize=(9, 4.2))
     ax = fig.add_subplot(1, 1, 1)
@@ -306,7 +306,7 @@ def plot_regime_map(base_params, perturbation, seed=0):
     return fig
 
 
-def plot_control(out, steps, title="Control under constraints"):
+def plot_control(out, steps, title="Error and control effort"):
     x = np.arange(steps)
     fig = plt.figure(figsize=(9, 4.2))
     ax = fig.add_subplot(1, 1, 1)
@@ -323,17 +323,12 @@ def plot_control(out, steps, title="Control under constraints"):
 
 
 # -----------------------------
-# UI
+# App UI
 # -----------------------------
-st.title("Why Openness Isn't Life")
+st.title("Why Openness Isn’t Life Studio")
+st.caption("Explore how openness, dissipation, and feedback interact—using only plots and model controls.")
 
-# Sidebar controls
 with st.sidebar:
-    st.header("Mode")
-    mode = st.radio("View", ["Student", "Instructor"], index=0)
-    instructor_mode = (mode == "Instructor")
-
-    st.divider()
     st.header("System choices")
 
     duck_type = st.radio("Duck type", ["Living", "Mechanical"], index=0)
@@ -356,14 +351,11 @@ with st.sidebar:
 
     st.divider()
     st.header("Constraint knobs")
-
     throughput = st.slider("Throughput (driving)", 0.0, 1.0, 0.65, 0.01)
     maintenance_cost = st.slider("Maintenance cost (overhead)", 0.0, 1.0, 0.35, 0.01)
-
     repair_capacity = st.slider("Repair capacity (cap)", 0.0, 1.0, 0.55, 0.01)
     actuator_strength = st.slider("Actuator strength (cap)", 0.0, 1.0, 0.50, 0.01)
     control_delay = st.slider("Control delay (steps)", 0, 10, 1, 1)
-
     noise = st.slider("Noise", 0.0, 0.10, 0.01, 0.005)
 
     st.divider()
@@ -375,13 +367,11 @@ with st.sidebar:
     st.divider()
     st.header("Simulation")
     steps = st.slider("Steps", 60, 300, 160, 10)
-
     env_temp = st.slider("Environment temperature (normalized)", 0.0, 1.0, 0.70, 0.01)
     env_coupling = st.slider("Energy coupling to environment", 0.0, 0.25, 0.08, 0.01)
-
     seed = st.number_input("Random seed", min_value=0, max_value=10_000, value=0, step=1)
 
-# Perturbation preset
+# Shock timing preset
 if shock_time_mode == "Early":
     shock_time = int(0.15 * steps)
 elif shock_time_mode == "Mid":
@@ -456,41 +446,31 @@ params = {
 initial_default = {"E": 0.75, "I": 0.85, "C": params["core_target"]}
 out = simulate(params, initial_default, perturbation, seed=int(seed))
 
-# Top-row diagnostics (visible, but not explanatory)
+# Top diagnostics (no explanation; just observables)
 c1, c2, c3, c4 = st.columns(4)
 c1.metric("Final viability", f"{out['finalV']:.2f}")
 c2.metric("Minimum viability", f"{out['minV']:.2f}")
-c3.metric("Regime", out["regime"])
+c3.metric("Regime label", out["regime"])
 c4.metric("Binding constraint", out["binding"])
 
-# Tabs
-tab_bert, tab_prig, tab_wien = st.tabs(
-    ["Bertalanffy", "Prigogine", "Wiener"]
-)
+# Tabs aligned to the three theorists (student-facing prompts only)
+tab_bert, tab_prig, tab_wien = st.tabs(["Bertalanffy", "Prigogine", "Wiener"])
 
 with tab_bert:
-    st.subheader("Equifinality overlay")
+    st.subheader("Equifinality overlay (different initial conditions)")
     fig_eq, eq_present, outs = plot_equifinality_overlay(params, perturbation, seed=int(seed))
     left, right = st.columns([1.2, 1.0])
     with left:
         st.pyplot(fig_eq, clear_figure=True)
     with right:
-        st.metric("Equifinality", "Present" if eq_present else "Absent")
+        st.metric("Equifinality indicator", "Present" if eq_present else "Absent")
         st.markdown("### Prompts")
         st.markdown(
-            "- Do the three trajectories converge?\n"
-            "- If not, which knob changes that?\n"
-            "- Which initial condition is most vulnerable in your current setting?"
+            "- Do the trajectories converge to a similar outcome?\n"
+            "- Which initial condition is most vulnerable under your current settings?\n"
+            "- Which knob changes whether convergence occurs?"
         )
-
-        if instructor_mode:
-            st.markdown("### Instructor notes")
-            st.markdown(
-                "- Equifinality operationally = convergence of outcomes from different initial states.\n"
-                "- Make it fail by raising maintenance or lowering repair/control."
-            )
-
-        st.markdown("### Final outcomes (in-app)")
+        st.markdown("### Run summaries (in-app)")
         for i, o in enumerate(outs):
             st.write(f"- IC-{i+1}: final={o['finalV']:.2f}, min={o['minV']:.2f}, regime={o['regime']}")
 
@@ -499,53 +479,26 @@ with tab_prig:
     left, right = st.columns([1.05, 1.15])
     with left:
         st.pyplot(plot_timeseries(out, steps, title="Time series (current settings)"), clear_figure=True)
-        st.pyplot(plot_constraint_dashboard(out, steps, title="Constraint dashboard (current settings)"), clear_figure=True)
+        st.pyplot(plot_constraint_dashboard(out, steps, title="Budget & maintenance signals (current settings)"), clear_figure=True)
     with right:
         st.pyplot(plot_regime_map(params, perturbation, seed=int(seed)), clear_figure=True)
         st.markdown("### Prompts")
         st.markdown(
-            "- Locate your current settings on the regime map.\n"
-            "- What changes first when you lower throughput: energy, core, integrity, or viability?\n"
-            "- Where is the threshold where the regime changes?"
+            "- Locate your current throughput/maintenance setting on the regime map.\n"
+            "- As you lower throughput, what changes first: energy, core, integrity, or viability?\n"
+            "- Can you find a threshold where the regime label flips?"
         )
-
-        if instructor_mode:
-            st.markdown("### Instructor notes")
-            st.markdown(
-                "- Use this to separate ‘feedback exists’ from ‘the system can afford to remain organized’.\n"
-                "- Oscillations often increase with delay and near-threshold budgets."
-            )
 
 with tab_wien:
     st.subheader("Control under constraints")
     left, right = st.columns([1.15, 1.05])
     with left:
         st.pyplot(plot_timeseries(out, steps, title="Time series (current settings)"), clear_figure=True)
-        st.pyplot(plot_control(out, steps, title="Error and control effort"), clear_figure=True)
+        st.pyplot(plot_control(out, steps, title="Error and control effort (current settings)"), clear_figure=True)
     with right:
         st.markdown("### Prompts")
         st.markdown(
-            "- Does the control effort hit a cap?\n"
-            "- If the system fails to recover, is control unavailable, saturated, or delayed?\n"
-            "- What happens when you increase delay or decrease actuator strength?"
-        )
-
-        if instructor_mode:
-            st.markdown("### Instructor notes")
-            st.markdown(
-                "- Saturation: effort flat-tops near caps.\n"
-                "- Delay: error/effort oscillate and can destabilize.\n"
-                "- ‘Licensed’ (info+control on) is not the same as ‘effective’ (constraints allow correction)."
-            )
-
-# Legend: hidden unless instructor mode (to avoid “notes” in student UI)
-if instructor_mode:
-    with st.expander("Model legend (instructor only)"):
-        st.markdown(
-            "**States:** Energy (E), Integrity (I), Core condition (C), Viability (V).\n\n"
-            "**Cold shock:** transient drop in environment temperature; affects core only if Energy crossing is ON.\n\n"
-            "**Viability:** composite of energy, integrity, and closeness of core to target.\n\n"
-            "**Equifinality overlay:** three initial conditions; convergence suggests equifinality.\n\n"
-            "**Regime map:** classification across throughput × maintenance cost.\n\n"
-            "**Control plot:** error and control effort; dashed lines show actuator caps."
+            "- Does the control effort hit a cap (flat-topping at dashed lines)?\n"
+            "- What changes first when you increase delay: the error, the effort, or viability?\n"
+            "- Can you produce oscillation by tuning delay and actuator strength?"
         )
